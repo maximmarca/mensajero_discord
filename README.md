@@ -27,6 +27,20 @@ mensajero_discord.exe --token TOKEN --channel CHANNEL_ID <comando>
 mensajero_discord.exe --token ABC123 --channel 999 send "Hola, ya termine el refactor"
 ```
 
+#### Auto-chunking (mensajes largos)
+
+Si el contenido supera `--chunk-size` chars (default 1500, por R4 del protocolo), el comando lo parte automaticamente. Cada parte se envia secuencialmente con un delay corto, prefijada por `[CHUNK i/T]` y conservando la firma final (`--maxi`/`--fer`) en todos los chunks para que los filtros del watcher emitan todas las partes.
+
+Boundaries preferidos para el corte: newline > espacio > corte hard.
+
+```
+# Mensaje gigante: el binario lo parte solo
+mensajero_discord.exe send "<3000 caracteres con varias lineas...>"
+
+# Forzar chunks mas chicos (util para testing)
+mensajero_discord.exe send --chunk-size 200 "lorem ipsum dolor sit amet ..."
+```
+
 ### Leer mensajes
 
 ```
