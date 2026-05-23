@@ -41,10 +41,11 @@ READ_NEW() {
 # Capturar URL de remote control al inicio usando script para simular TTY
 echo "[watcher] Obteniendo URL de Remote Control..."
 RCLOG=$(mktemp)
-timeout 6 script -q "$RCLOG" -c \
-  "claude --remote-control '${RC_SESSION_NAME}' --dangerously-skip-permissions --model claude-sonnet-4-6 -p 'inicio'" \
-  2>/dev/null || true
-RC_URL=$(strings "$RCLOG" 2>/dev/null | grep -oP 'https://claude\.ai/code/session_\w+' | head -1)
+# Modo interactivo con /exit demorado para que aparezca la URL antes de salir
+{ sleep 3; echo "/exit"; } | timeout 8 script -q "$RCLOG" -c \
+  "claude --remote-control '${RC_SESSION_NAME}' --dangerously-skip-permissions --model claude-sonnet-4-6" \
+  > /dev/null 2>&1 || true
+RC_URL=$(strings "$RCLOG" 2>/dev/null | grep -oP 'https://claude\.ai/code/session_\w+' | head -1 || true)
 rm -f "$RCLOG"
 
 if [[ -n "$RC_URL" ]]; then
