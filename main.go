@@ -88,12 +88,93 @@ func jsonString(s string) string {
 	return string(b)
 }
 
+func loadLastSeen(file string) string {
+	if file == "" {
+		return ""
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func saveLastSeen(file, id string) error {
+	if file == "" || id == "" {
+		return nil
+	}
+	return os.WriteFile(file, []byte(id+"\n"), 0644)
+}
+
+func watchMessages(token, channelID, stateFile, filterSig string, interval time.Duration) error {
+	lastID := loadLastSeen(stateFile)
+	if lastID == "" {
+		msgs, err := readMessages(token, channelID, 1, "")
+		if err != nil {
+			return fmt.Errorf("init: %w", err)
+		}
+		if len(msgs) > 0 {
+			lastID = msgs[len(msgs)-1].ID
+			_ = saveLastSeen(stateFile, lastID)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "[watch-init] interval=%s state=%s filter=%q last_seen_id=%s\n",
+		interval, stateFile, filterSig, lastID)
+
+	backoff := interval
+	maxBackoff := 5 * time.Minute
+	for {
+		time.Sleep(backoff)
+		msgs, err := readMessages(token, channelID, 10, lastID)
+		if err != nil {
+			if strings.Contains(err.Error(), "429") {
+				if backoff < maxBackoff {
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+				}
+				fmt.Fprintf(os.Stderr, "[watch-429] backoff=%s\n", backoff)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "[watch-err] %v\n", err)
+			continue
+		}
+		backoff = interval
+
+		if len(msgs) == 0 {
+			continue
+		}
+
+		for _, m := range msgs {
+			if filterSig != "" {
+				trimmed := strings.TrimRight(m.Content, " \t\r\n")
+				if !strings.HasSuffix(trimmed, filterSig) {
+					continue
+				}
+			}
+			fmt.Printf("[%s] %s (id:%s): %s\n",
+				m.Timestamp.Local().Format("15:04:05"),
+				m.Author.Username,
+				m.ID,
+				m.Content,
+			)
+		}
+
+		lastID = msgs[len(msgs)-1].ID
+		if err := saveLastSeen(stateFile, lastID); err != nil {
+			fmt.Fprintf(os.Stderr, "[watch-warn] saveLastSeen: %v\n", err)
+		}
+	}
+}
+
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `mensajero_discord - CLI para comunicar Claude Code via Discord
 
 Uso:
   mensajero_discord --token TOKEN --channel ID send <mensaje>
   mensajero_discord --token TOKEN --channel ID read [--last N] [--from nombre] [--after id]
+  mensajero_discord --token TOKEN --channel ID watch [--interval SEG] [--state FILE] [--filter SIG]
 
 Parametros globales:
   --token    Token del bot de Discord
@@ -104,11 +185,17 @@ Parametros de read:
   --from nombre  Filtrar por nombre de usuario
   --after id     Leer mensajes posteriores a este ID
 
+Parametros de watch:
+  --interval N   Segundos entre polls (default: 30)
+  --state FILE   Archivo donde persistir last_seen_id (default: .mensajero_state)
+  --filter SIG   Solo emitir mensajes cuyo contenido termine con SIG (ej: --fer)
+
 Ejemplos:
   mensajero_discord --token ABC123 --channel 999 send "Hola maxi"
   mensajero_discord --token ABC123 --channel 999 read --last 5
   mensajero_discord --token ABC123 --channel 999 read --from maxi
   mensajero_discord --token ABC123 --channel 999 read --after 1234567890
+  mensajero_discord --token ABC123 --channel 999 watch --filter --fer --state state/last_seen_id.txt
 `)
 }
 
@@ -245,6 +332,42 @@ func main() {
 				m.ID,
 				m.Content,
 			)
+		}
+
+	case "watch":
+		intervalSec := 30
+		stateFile := ".mensajero_state"
+		filterSig := ""
+
+		args := g.rest[1:]
+		for i := 0; i < len(args); i++ {
+			switch args[i] {
+			case "--interval":
+				if i+1 < len(args) {
+					i++
+					n, err := strconv.Atoi(args[i])
+					if err != nil || n <= 0 {
+						fmt.Fprintf(os.Stderr, "Error: --interval requiere un numero positivo (segundos)\n")
+						os.Exit(1)
+					}
+					intervalSec = n
+				}
+			case "--state":
+				if i+1 < len(args) {
+					i++
+					stateFile = args[i]
+				}
+			case "--filter":
+				if i+1 < len(args) {
+					i++
+					filterSig = args[i]
+				}
+			}
+		}
+
+		if err := watchMessages(g.token, g.channelID, stateFile, filterSig, time.Duration(intervalSec)*time.Second); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
 
 	default:
