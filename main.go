@@ -14,8 +14,8 @@ import (
 const baseURL = "https://discord.com/api/v10"
 
 const (
-	chunkSizeDefault = 1500
-	interChunkDelay  = 500 * time.Millisecond
+	chunkSizeDefault    = 1500
+	chunkDelayMsDefault = 500
 )
 
 type Message struct {
@@ -110,17 +110,21 @@ func sendOne(token, channelID, content string) error {
 	return nil
 }
 
-func sendMessage(token, channelID, content string, chunkSize int) error {
+func sendMessage(token, channelID, content string, chunkSize, chunkDelayMs int) error {
 	if chunkSize <= 0 {
 		chunkSize = chunkSizeDefault
 	}
+	if chunkDelayMs < 0 {
+		chunkDelayMs = chunkDelayMsDefault
+	}
+	delay := time.Duration(chunkDelayMs) * time.Millisecond
 	chunks := chunkContent(content, chunkSize)
 	for i, c := range chunks {
 		if err := sendOne(token, channelID, c); err != nil {
 			return fmt.Errorf("chunk %d/%d: %w", i+1, len(chunks), err)
 		}
-		if i < len(chunks)-1 {
-			time.Sleep(interChunkDelay)
+		if i < len(chunks)-1 && delay > 0 {
+			time.Sleep(delay)
 		}
 	}
 	return nil
@@ -248,7 +252,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `mensajero_discord - CLI para comunicar Claude Code via Discord
 
 Uso:
-  mensajero_discord --token TOKEN --channel ID send [--chunk-size N] <mensaje>
+  mensajero_discord --token TOKEN --channel ID send [--chunk-size N] [--chunk-delay MS] <mensaje>
   mensajero_discord --token TOKEN --channel ID read [--last N] [--from nombre] [--after id]
   mensajero_discord --token TOKEN --channel ID watch [--interval SEG] [--state FILE] [--filter SIG]
 
@@ -257,9 +261,11 @@ Parametros globales:
   --channel  ID del canal de texto
 
 Parametros de send:
-  --chunk-size N  Particionar mensajes que excedan N caracteres (default: 1500).
-                  Cada chunk se prefija con [CHUNK i/T] y se reenvia la firma
-                  (--maxi/--fer) al final si el mensaje original la tenia.
+  --chunk-size N    Particionar mensajes que excedan N caracteres (default: 1500).
+                    Cada chunk se prefija con [CHUNK i/T] y se reenvia la firma
+                    (--maxi/--fer) al final si el mensaje original la tenia.
+  --chunk-delay MS  Milisegundos a esperar entre envios de chunks (default: 500).
+                    Pasar 0 para enviar todo de corrido (testing).
 
 Parametros de read:
   --last N       Cantidad de mensajes a leer (default: 10)
@@ -348,6 +354,7 @@ func main() {
 	switch g.rest[0] {
 	case "send":
 		chunkSize := chunkSizeDefault
+		chunkDelayMs := chunkDelayMsDefault
 		var rest []string
 		args := g.rest[1:]
 		for i := 0; i < len(args); i++ {
@@ -361,14 +368,24 @@ func main() {
 				chunkSize = n
 				continue
 			}
+			if args[i] == "--chunk-delay" && i+1 < len(args) {
+				i++
+				n, err := strconv.Atoi(args[i])
+				if err != nil || n < 0 {
+					fmt.Fprintf(os.Stderr, "Error: --chunk-delay requiere un numero >= 0 (milisegundos)\n")
+					os.Exit(1)
+				}
+				chunkDelayMs = n
+				continue
+			}
 			rest = append(rest, args[i])
 		}
 		if len(rest) == 0 {
-			fmt.Fprintln(os.Stderr, "Uso: mensajero_discord --token T --channel C send [--chunk-size N] <mensaje>")
+			fmt.Fprintln(os.Stderr, "Uso: mensajero_discord --token T --channel C send [--chunk-size N] [--chunk-delay MS] <mensaje>")
 			os.Exit(1)
 		}
 		msg := strings.Join(rest, " ")
-		if err := sendMessage(g.token, g.channelID, msg, chunkSize); err != nil {
+		if err := sendMessage(g.token, g.channelID, msg, chunkSize, chunkDelayMs); err != nil {
 			fmt.Fprintf(os.Stderr, "Error enviando: %v\n", err)
 			os.Exit(1)
 		}
