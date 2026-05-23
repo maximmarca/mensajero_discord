@@ -68,18 +68,22 @@ func TestChunkContentNoSignatureLongCutsHard(t *testing.T) {
 }
 
 func TestChunkContentNewlineBoundaryPreferred(t *testing.T) {
-	body := strings.Repeat("aaaa\n", 100) // 500 chars, every 5th is \n
-	r := chunkContent(body+"--fer", 80)
+	input := strings.Repeat("aaaa\n", 100) + "--fer" // 505 chars
+	r := chunkContent(input, 80)
+	if len(r) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(r))
+	}
 	for i, c := range r {
-		// Each chunk should end after a newline boundary (or be the last chunk with sig)
-		stripped := strings.TrimSuffix(c, "\n--fer")
-		stripped = strings.TrimSuffix(stripped, "--fer")
-		stripped = strings.TrimRight(stripped, " \t\r\n")
 		prefix := fmt.Sprintf("[CHUNK %d/%d] ", i+1, len(r))
+		stripped := strings.TrimSuffix(c, "\n--fer")
 		body := strings.TrimPrefix(stripped, prefix)
-		// body should not contain a partial "aaaa" at the end
-		if len(body) > 0 && !strings.HasSuffix(body, "aaaa") {
-			t.Logf("chunk %d body ends with %q (might be acceptable)", i, body[max0(0, len(body)-10):])
+		for j, part := range strings.Split(body, "\n") {
+			if part == "" {
+				continue
+			}
+			if part != "aaaa" {
+				t.Errorf("chunk %d part %d: cut mid-line, expected complete 'aaaa' unit, got %q", i, j, part)
+			}
 		}
 	}
 }

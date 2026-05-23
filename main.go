@@ -57,7 +57,7 @@ func chunkContent(content string, maxChunkSize int) []string {
 		return []string{content + sigSuffix}
 	}
 
-	const prefixReserve = 16 // "[CHUNK NN/NN] "
+	const prefixReserve = 16 // soporta hasta "[CHUNK NNN/NNN] " (3 digitos cada lado).
 	bodyBudget := maxChunkSize - prefixReserve - len(sigSuffix)
 	if bodyBudget < 100 {
 		bodyBudget = 100
