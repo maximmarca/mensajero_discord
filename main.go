@@ -13,6 +13,11 @@ import (
 
 const baseURL = "https://discord.com/api/v10"
 
+const (
+	chunkSizeDefault = 1500
+	interChunkDelay  = 500 * time.Millisecond
+)
+
 type Message struct {
 	ID        string    `json:"id"`
 	Content   string    `json:"content"`
@@ -27,7 +32,62 @@ type Author struct {
 	Discriminator string `json:"discriminator"`
 }
 
-func sendMessage(token, channelID, content string) error {
+// chunkContent particiona content en piezas <= maxChunkSize.
+// Si content termina con una firma --maxi/--fer, la preserva al final de cada
+// chunk para que los watchers que filtran por firma reciban todas las partes.
+// Prefiere cortar en boundary de newline, despues espacio, despues hard cut.
+// Devuelve la lista completa (1 elemento si no requiere chunking).
+func chunkContent(content string, maxChunkSize int) []string {
+	signature := ""
+	trimmed := strings.TrimRight(content, " \t\r\n")
+	for _, s := range []string{"--maxi", "--fer"} {
+		if strings.HasSuffix(trimmed, s) {
+			signature = s
+			content = strings.TrimRight(strings.TrimSuffix(trimmed, s), " \t\r\n")
+			break
+		}
+	}
+
+	sigSuffix := ""
+	if signature != "" {
+		sigSuffix = "\n" + signature
+	}
+
+	if len(content)+len(sigSuffix) <= maxChunkSize {
+		return []string{content + sigSuffix}
+	}
+
+	const prefixReserve = 16 // "[CHUNK NN/NN] "
+	bodyBudget := maxChunkSize - prefixReserve - len(sigSuffix)
+	if bodyBudget < 100 {
+		bodyBudget = 100
+	}
+
+	var pieces []string
+	remaining := content
+	for len(remaining) > bodyBudget {
+		cutAt := bodyBudget
+		if idx := strings.LastIndex(remaining[:bodyBudget], "\n"); idx > 0 {
+			cutAt = idx + 1
+		} else if idx := strings.LastIndex(remaining[:bodyBudget], " "); idx > 0 {
+			cutAt = idx + 1
+		}
+		pieces = append(pieces, strings.TrimRight(remaining[:cutAt], " \t\r\n"))
+		remaining = remaining[cutAt:]
+	}
+	if len(remaining) > 0 {
+		pieces = append(pieces, strings.TrimRight(remaining, " \t\r\n"))
+	}
+
+	total := len(pieces)
+	result := make([]string, total)
+	for i, p := range pieces {
+		result[i] = fmt.Sprintf("[CHUNK %d/%d] %s%s", i+1, total, p, sigSuffix)
+	}
+	return result
+}
+
+func sendOne(token, channelID, content string) error {
 	url := fmt.Sprintf("%s/channels/%s/messages", baseURL, channelID)
 	body := fmt.Sprintf(`{"content":%s}`, jsonString(content))
 	req, err := http.NewRequest("POST", url, strings.NewReader(body))
@@ -46,6 +106,22 @@ func sendMessage(token, channelID, content string) error {
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("discord respondio %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+func sendMessage(token, channelID, content string, chunkSize int) error {
+	if chunkSize <= 0 {
+		chunkSize = chunkSizeDefault
+	}
+	chunks := chunkContent(content, chunkSize)
+	for i, c := range chunks {
+		if err := sendOne(token, channelID, c); err != nil {
+			return fmt.Errorf("chunk %d/%d: %w", i+1, len(chunks), err)
+		}
+		if i < len(chunks)-1 {
+			time.Sleep(interChunkDelay)
+		}
 	}
 	return nil
 }
@@ -172,13 +248,18 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `mensajero_discord - CLI para comunicar Claude Code via Discord
 
 Uso:
-  mensajero_discord --token TOKEN --channel ID send <mensaje>
+  mensajero_discord --token TOKEN --channel ID send [--chunk-size N] <mensaje>
   mensajero_discord --token TOKEN --channel ID read [--last N] [--from nombre] [--after id]
   mensajero_discord --token TOKEN --channel ID watch [--interval SEG] [--state FILE] [--filter SIG]
 
 Parametros globales:
   --token    Token del bot de Discord
   --channel  ID del canal de texto
+
+Parametros de send:
+  --chunk-size N  Particionar mensajes que excedan N caracteres (default: 1500).
+                  Cada chunk se prefija con [CHUNK i/T] y se reenvia la firma
+                  (--maxi/--fer) al final si el mensaje original la tenia.
 
 Parametros de read:
   --last N       Cantidad de mensajes a leer (default: 10)
@@ -192,6 +273,7 @@ Parametros de watch:
 
 Ejemplos:
   mensajero_discord --token ABC123 --channel 999 send "Hola maxi"
+  mensajero_discord --token ABC123 --channel 999 send --chunk-size 1000 "mensaje largo..."
   mensajero_discord --token ABC123 --channel 999 read --last 5
   mensajero_discord --token ABC123 --channel 999 read --from maxi
   mensajero_discord --token ABC123 --channel 999 read --after 1234567890
@@ -265,12 +347,28 @@ func main() {
 
 	switch g.rest[0] {
 	case "send":
-		if len(g.rest) < 2 {
-			fmt.Fprintln(os.Stderr, "Uso: mensajero_discord --token T --channel C send <mensaje>")
+		chunkSize := chunkSizeDefault
+		var rest []string
+		args := g.rest[1:]
+		for i := 0; i < len(args); i++ {
+			if args[i] == "--chunk-size" && i+1 < len(args) {
+				i++
+				n, err := strconv.Atoi(args[i])
+				if err != nil || n <= 0 {
+					fmt.Fprintf(os.Stderr, "Error: --chunk-size requiere un numero positivo\n")
+					os.Exit(1)
+				}
+				chunkSize = n
+				continue
+			}
+			rest = append(rest, args[i])
+		}
+		if len(rest) == 0 {
+			fmt.Fprintln(os.Stderr, "Uso: mensajero_discord --token T --channel C send [--chunk-size N] <mensaje>")
 			os.Exit(1)
 		}
-		msg := strings.Join(g.rest[1:], " ")
-		if err := sendMessage(g.token, g.channelID, msg); err != nil {
+		msg := strings.Join(rest, " ")
+		if err := sendMessage(g.token, g.channelID, msg, chunkSize); err != nil {
 			fmt.Fprintf(os.Stderr, "Error enviando: %v\n", err)
 			os.Exit(1)
 		}
