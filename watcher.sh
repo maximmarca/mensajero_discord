@@ -77,7 +77,7 @@ R5: persistir last_seen_id (ya implementado).
 
 Si hay algo que requiera respuesta, generá el texto del mensaje a enviar (solo el texto, sin comandos). Si no hay nada que responder, respondé exactamente: NOOP"
 
-        response=$(echo "$prompt" | claude --model claude-sonnet-4-6 --output-format text 2>/dev/null || true)
+        response=$(echo "$prompt" | claude --dangerously-skip-permissions --chrome --model claude-sonnet-4-6 --output-format text 2>/dev/null || true)
 
         if [[ -n "$response" && "$response" != "NOOP" && "$response" != *"NOOP"* ]]; then
           echo "[watcher] Respondiendo: $response"
