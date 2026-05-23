@@ -87,9 +87,17 @@ func chunkContent(content string, maxChunkSize int) []string {
 	return result
 }
 
-func sendOne(token, channelID, content string) error {
+func sendOne(token, channelID, content, replyToID string) error {
 	url := fmt.Sprintf("%s/channels/%s/messages", baseURL, channelID)
-	body := fmt.Sprintf(`{"content":%s}`, jsonString(content))
+	var body string
+	if replyToID != "" {
+		body = fmt.Sprintf(
+			`{"content":%s,"message_reference":{"message_id":%s,"fail_if_not_exists":false}}`,
+			jsonString(content), jsonString(replyToID),
+		)
+	} else {
+		body = fmt.Sprintf(`{"content":%s}`, jsonString(content))
+	}
 	req, err := http.NewRequest("POST", url, strings.NewReader(body))
 	if err != nil {
 		return err
@@ -110,7 +118,10 @@ func sendOne(token, channelID, content string) error {
 	return nil
 }
 
-func sendMessage(token, channelID, content string, chunkSize, chunkDelayMs int) error {
+// sendMessage orquesta el chunking + envio secuencial.
+// replyToID, si no es vacio, agrega message_reference al PRIMER chunk solamente.
+// Los chunks subsiguientes se mandan sin referencia para no romper el render del thread.
+func sendMessage(token, channelID, content string, chunkSize, chunkDelayMs int, replyToID string) error {
 	if chunkSize <= 0 {
 		chunkSize = chunkSizeDefault
 	}
@@ -120,7 +131,11 @@ func sendMessage(token, channelID, content string, chunkSize, chunkDelayMs int) 
 	delay := time.Duration(chunkDelayMs) * time.Millisecond
 	chunks := chunkContent(content, chunkSize)
 	for i, c := range chunks {
-		if err := sendOne(token, channelID, c); err != nil {
+		ref := ""
+		if i == 0 {
+			ref = replyToID
+		}
+		if err := sendOne(token, channelID, c, ref); err != nil {
 			return fmt.Errorf("chunk %d/%d: %w", i+1, len(chunks), err)
 		}
 		if i < len(chunks)-1 && delay > 0 {
@@ -252,7 +267,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `mensajero_discord - CLI para comunicar Claude Code via Discord
 
 Uso:
-  mensajero_discord --token TOKEN --channel ID send [--chunk-size N] [--chunk-delay MS] <mensaje>
+  mensajero_discord --token TOKEN --channel ID send [--chunk-size N] [--chunk-delay MS] [--reply-to ID] <mensaje>
   mensajero_discord --token TOKEN --channel ID read [--last N] [--from nombre] [--after id]
   mensajero_discord --token TOKEN --channel ID watch [--interval SEG] [--state FILE] [--filter SIG]
 
@@ -266,6 +281,9 @@ Parametros de send:
                     (--maxi/--fer) al final si el mensaje original la tenia.
   --chunk-delay MS  Milisegundos a esperar entre envios de chunks (default: 500).
                     Pasar 0 para enviar todo de corrido (testing).
+  --reply-to ID     Vincular el mensaje como respuesta nativa de Discord al
+                    mensaje con ese ID. Si hay chunking, solo el primer chunk
+                    lleva la referencia (los siguientes se mandan sueltos).
 
 Parametros de read:
   --last N       Cantidad de mensajes a leer (default: 10)
@@ -355,6 +373,7 @@ func main() {
 	case "send":
 		chunkSize := chunkSizeDefault
 		chunkDelayMs := chunkDelayMsDefault
+		replyToID := ""
 		var rest []string
 		args := g.rest[1:]
 		for i := 0; i < len(args); i++ {
@@ -378,14 +397,25 @@ func main() {
 				chunkDelayMs = n
 				continue
 			}
+			if args[i] == "--reply-to" && i+1 < len(args) {
+				i++
+				replyToID = args[i]
+				for _, ch := range replyToID {
+					if ch < '0' || ch > '9' {
+						fmt.Fprintf(os.Stderr, "Error: --reply-to requiere un ID numerico de mensaje de Discord\n")
+						os.Exit(1)
+					}
+				}
+				continue
+			}
 			rest = append(rest, args[i])
 		}
 		if len(rest) == 0 {
-			fmt.Fprintln(os.Stderr, "Uso: mensajero_discord --token T --channel C send [--chunk-size N] [--chunk-delay MS] <mensaje>")
+			fmt.Fprintln(os.Stderr, "Uso: mensajero_discord --token T --channel C send [--chunk-size N] [--chunk-delay MS] [--reply-to ID] <mensaje>")
 			os.Exit(1)
 		}
 		msg := strings.Join(rest, " ")
-		if err := sendMessage(g.token, g.channelID, msg, chunkSize, chunkDelayMs); err != nil {
+		if err := sendMessage(g.token, g.channelID, msg, chunkSize, chunkDelayMs, replyToID); err != nil {
 			fmt.Fprintf(os.Stderr, "Error enviando: %v\n", err)
 			os.Exit(1)
 		}

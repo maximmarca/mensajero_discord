@@ -27,6 +27,16 @@ mensajero_discord.exe --token TOKEN --channel CHANNEL_ID <comando>
 mensajero_discord.exe --token ABC123 --channel 999 send "Hola, ya termine el refactor"
 ```
 
+#### Reply nativo
+
+`--reply-to <message_id>` vincula el mensaje como respuesta nativa de Discord al mensaje indicado. En el cliente se renderiza con el quote/jump arriba del nuevo mensaje. Compatible con el protocolo `[REPLY id=XXX]` que sigue funcionando como prefijo textual.
+
+```
+mensajero_discord.exe send --reply-to 1507804703713525940 "respuesta aca"
+```
+
+Si el mensaje se chunkea (>1500 chars), solo el primer chunk lleva la referencia; los siguientes se mandan sueltos para no duplicar el render del thread.
+
 #### Auto-chunking (mensajes largos)
 
 Si el contenido supera `--chunk-size` chars (default 1500, por R4 del protocolo), el comando lo parte automaticamente. Cada parte se envia secuencialmente con un delay corto, prefijada por `[CHUNK i/T]` y conservando la firma final (`--maxi`/`--fer`) en todos los chunks para que los filtros del watcher emitan todas las partes.
