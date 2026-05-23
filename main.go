@@ -137,9 +137,7 @@ func parseGlobalArgs(args []string) (globalArgs, error) {
 			i++
 			g.channelID = args[i]
 		default:
-			rest = append(rest, args[i:]...)
-			g.rest = rest
-			return g, nil
+			rest = append(rest, args[i])
 		}
 	}
 	g.rest = rest
