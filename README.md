@@ -43,6 +43,29 @@ mensajero_discord.exe --token ABC123 --channel 999 read --from maxi
 mensajero_discord.exe --token ABC123 --channel 999 read --after 1234567890
 ```
 
+### Watch (polling continuo)
+
+Subcomando nativo que reemplaza `watcher.sh`. Hace polling al canal y emite a stdout solo los mensajes nuevos cuyo contenido termina con la firma indicada via `--filter`. Persiste `last_seen_id` en el archivo indicado por `--state` (sobrevive restarts).
+
+```
+# Polling cada 30s, solo emite mensajes firmados "--fer"
+mensajero_discord.exe watch --filter --fer --state state/last_seen_id.txt
+
+# Intervalo custom (10s)
+mensajero_discord.exe watch --interval 10 --filter --fer --state state/last_seen_id.txt
+
+# Sin filtro: emite todo mensaje nuevo
+mensajero_discord.exe watch --state state/last_seen_id.txt
+```
+
+Parametros:
+
+- `--interval N`     Segundos entre polls (default: 30)
+- `--state FILE`     Archivo donde persistir `last_seen_id` (default: `.mensajero_state`)
+- `--filter SIG`     Solo emitir mensajes cuyo contenido (trimmed) termine con `SIG`
+
+Backoff exponencial automatico ante `429` (rate limit Discord), tope 5min.
+
 ### Variables de entorno (alternativa)
 
 En lugar de pasar `--token` y `--channel` cada vez, se pueden usar variables de entorno:
