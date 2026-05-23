@@ -40,40 +40,43 @@ echo "[watcher] Iniciado. Polling cada ${POLL_INTERVAL}s. State: ${STATE_FILE}"
       continue
     fi
 
-    echo "[watcher] Mensaje nuevo: $line"
+    # Extraer contenido: formato es "[HH:MM:SS] username (id:XXXX): contenido"
+    content=$(echo "$line" | sed 's/^\[[0-9:]*\] [^(]*(id:[0-9]*): //')
+
+    echo "[watcher] Mensaje nuevo de $(echo "$line" | grep -oP '^\[[0-9:]*\] \K[^(]+' | tr -d ' '): '${content}'"
+
+    # Saltar si el contenido está vacío
+    if [[ -z "${content// /}" ]]; then
+      echo "[watcher] Contenido vacío, ignorando."
+      continue
+    fi
 
     # Determinar tipo de remitente
-    if echo "$line" | grep -q -- '--maxi$'; then
+    if echo "$content" | grep -q -- '--maxi$'; then
       sender="el Claude Code de Maxi (agente)"
     else
       sender="un usuario humano"
     fi
 
-    prompt="Sos el Claude Code de Fer monitoreando un canal de Discord compartido entre dos agentes (fer y maxi) y usuarios humanos.
+    prompt="Sos el Claude Code de Fer en un canal de Discord compartido entre dos agentes (fer y maxi) y usuarios humanos.
 
-Mensaje nuevo de ${sender}:
-${line}
+Mensaje nuevo de ${sender}: ${content}
 
-Como identificar quien escribio:
-- Claude Code de Maxi: termina con '--maxi'
-- Usuario humano: no tiene firma '--fer' ni '--maxi'
+Reglas:
+- Si es de MAXI (termina con '--maxi'): aplica protocolo [TAG] ... --fer con [REPLY id=XXX] si corresponde.
+- Si es de un HUMANO: respondé de forma natural y conversacional. Siempre incluí --fer al final.
+- Si el mensaje no requiere respuesta (ej: es solo informativo y no hay nada util que agregar), respondé exactamente: NOOP
 
-Protocolo con Maxi:
-R1: firma --fer al final de cada msg.
-R2: [REPLY id=XXX] al contestar msg especifico.
-R4: [CHUNK N/T] si >1500 chars.
-
-Para HUMANOS: responde natural y conversacional, incluye firma --fer al final.
-Para MAXI: aplica protocolo completo.
-
-Si no requiere respuesta, respondé exactamente: NOOP
-Si hay respuesta, generá solo el texto del mensaje, sin comandos ni explicaciones."
+Generá solo el texto del mensaje a enviar, sin explicaciones."
 
     response=$(echo "$prompt" | claude --dangerously-skip-permissions --chrome --model claude-sonnet-4-6 --output-format text 2>/dev/null || true)
 
-    if [[ -n "$response" && "$response" != "NOOP" && "$response" != *"NOOP"* ]]; then
-      echo "[watcher] Respondiendo: $response"
-      SEND "$response" || echo "[watcher] Error enviando mensaje"
+    # Eliminar líneas que sean exactamente NOOP o que solo contengan NOOP
+    clean_response=$(echo "$response" | grep -v '^NOOP$' || true)
+
+    if [[ -n "${clean_response// /}" ]]; then
+      echo "[watcher] Respondiendo: $clean_response"
+      SEND "$clean_response" || echo "[watcher] Error enviando mensaje"
     else
       echo "[watcher] Sin respuesta necesaria."
     fi
