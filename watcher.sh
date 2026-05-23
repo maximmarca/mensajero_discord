@@ -8,8 +8,8 @@ DISCORD_CHANNEL="${DISCORD_CHANNEL_ID:-}"
 POLL_INTERVAL=30
 STATE_FILE="$(dirname "$0")/.last_seen_id"
 BINARY="$(dirname "$0")/mensajero_discord"
+RC_SESSION_NAME="watcher-fer"
 
-# Permitir pasar token y channel por argumento
 while [[ $# -gt 0 ]]; do
   case $1 in
     --token)    DISCORD_TOKEN="$2"; shift 2 ;;
@@ -38,32 +38,48 @@ READ_NEW() {
   fi
 }
 
+# Capturar URL de remote control al inicio usando script para simular TTY
+echo "[watcher] Obteniendo URL de Remote Control..."
+RCLOG=$(mktemp)
+timeout 6 script -q "$RCLOG" -c \
+  "claude --remote-control '${RC_SESSION_NAME}' --dangerously-skip-permissions --model claude-sonnet-4-6 -p 'inicio'" \
+  2>/dev/null || true
+RC_URL=$(strings "$RCLOG" 2>/dev/null | grep -oP 'https://claude\.ai/code/session_\w+' | head -1)
+rm -f "$RCLOG"
+
+if [[ -n "$RC_URL" ]]; then
+  echo ""
+  echo "============================================"
+  echo "  Remote Control activo: $RC_SESSION_NAME"
+  echo "  URL: $RC_URL"
+  echo "============================================"
+  echo ""
+else
+  echo "[watcher] Remote Control URL no disponible en este entorno."
+fi
+
 # Recuperar último ID procesado
 last_id=""
 if [[ -f "$STATE_FILE" ]]; then
   last_id=$(cat "$STATE_FILE")
 fi
 
-echo "[watcher] Iniciado. Modelo: claude sonnet (medium). Polling cada ${POLL_INTERVAL}s."
+echo "[watcher] Iniciado. Modelo: claude-sonnet-4-6. Polling cada ${POLL_INTERVAL}s."
 echo "[watcher] Último ID procesado: ${last_id:-ninguno}"
 
 while true; do
-  # Leer mensajes nuevos
   messages=$(READ_NEW "$last_id" 2>/dev/null || true)
 
   if [[ -n "$messages" && "$messages" != "No hay mensajes." ]]; then
     echo "[watcher] Mensajes nuevos:"
     echo "$messages"
 
-    # Extraer el último ID del output (formato: [...] username (id:XXXX): ...)
     new_last_id=$(echo "$messages" | grep -oP '\(id:\K[0-9]+' | tail -1)
 
     if [[ -n "$new_last_id" && "$new_last_id" != "$last_id" ]]; then
-      # Filtrar solo mensajes que NO sean nuestros (firma --fer al final)
       foreign_messages=$(echo "$messages" | grep -v -- '--fer$' || true)
 
       if [[ -n "$foreign_messages" ]]; then
-        # Pasar los mensajes a Claude Code CLI para que responda
         prompt="Sos el Claude Code de Fer monitoreando un canal de Discord. Recibiste estos mensajes nuevos:
 
 ${foreign_messages}
@@ -77,7 +93,11 @@ R5: persistir last_seen_id (ya implementado).
 
 Si hay algo que requiera respuesta, generá el texto del mensaje a enviar (solo el texto, sin comandos). Si no hay nada que responder, respondé exactamente: NOOP"
 
-        response=$(echo "$prompt" | claude --dangerously-skip-permissions --chrome --model claude-sonnet-4-6 --output-format text 2>/dev/null || true)
+        response=$(echo "$prompt" | claude \
+          --remote-control "$RC_SESSION_NAME" \
+          --dangerously-skip-permissions \
+          --model claude-sonnet-4-6 \
+          --output-format text 2>/dev/null || true)
 
         if [[ -n "$response" && "$response" != "NOOP" && "$response" != *"NOOP"* ]]; then
           echo "[watcher] Respondiendo: $response"
